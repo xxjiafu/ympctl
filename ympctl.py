@@ -241,7 +241,18 @@ def fmt_cell(v):
     return str(v)
 
 
-
+def fmt_mb(kb):
+    """YMP 的迁移量字段单位是 KB(Oracle 段大小)，换算为 MB 显示。"""
+    if kb is None:
+        return "-"
+    try:
+        kb = float(kb)
+    except (TypeError, ValueError):
+        return str(kb)
+    mb = kb / 1024.0
+    if mb >= 1:
+        return "%.2fMB" % mb
+    return "%.2fMB(原始%.0fKB)" % (mb, kb)
 
 
 def print_table(records, columns=None):
@@ -484,7 +495,11 @@ def cmd_task_get(args, path_tmpl, params=None):
     client = get_client(args)
     ensure_token(client, args)
     mid = resolve_migration_id(client, args)
-    result = client.get(path_tmpl, params=params or {"migrationTaskId": mid})
+    if params is None:
+        params = {"migrationTaskId": mid}
+    elif params.get("migrationTaskId") is None:
+        params = dict(params, migrationTaskId=mid)
+    result = client.get(path_tmpl, params=params)
     emit(result, args.json)
 
 
@@ -648,10 +663,56 @@ def cmd_task_import_config(args):
     emit(result, args.json)
 
 
+def cmd_task_progress(args):
+    """迁移进度；迁移量字段单位为 KB，换算为 MB 显示。"""
+    client = get_client(args)
+    ensure_token(client, args)
+    mid = resolve_migration_id(client, args)
+    result = client.get("yashan/migration/offlineTask/progress",
+                        params={"migrationTaskId": mid})
+    if args.json:
+        emit(result, True)
+        return
+    disp = dict(result) if isinstance(result, dict) else result
+    if isinstance(disp, dict) and isinstance(disp.get("data"), dict):
+        dd = dict(disp["data"])
+        for k in ("total", "success", "failure", "unfinished"):
+            if k in dd:
+                label = {"total": "总量", "success": "已成功",
+                         "failure": "失败", "unfinished": "未完成"}[k]
+                dd[k] = "%s (%s)" % (fmt_mb(dd[k]), label)
+        disp["data"] = dd
+        print("== 迁移进度 (migrationTaskId=%s，迁移量单位: MB) ==" % mid)
+    print_kv(disp)
 
 
-
-
+def cmd_task_objects(args):
+    """迁移对象列表；迁移量列换算为 MB 显示。"""
+    client = get_client(args)
+    ensure_token(client, args)
+    mid = resolve_migration_id(client, args)
+    result = client.get("yashan/migration/offlineTask/objects",
+                        params={"pageNum": args.page, "pageSize": args.size,
+                                "migrationTaskId": mid})
+    records = result.get("records") if isinstance(result, dict) else result
+    if args.json:
+        emit(result, True)
+        return
+    shown = []
+    for r in records or []:
+        r = dict(r)
+        r["migrate_size"] = "%s / 总量 %s" % (
+            fmt_mb(r.get("dataMigrationSize")), fmt_mb(r.get("dataTotalSize")))
+        shown.append(r)
+    print_table(shown, [
+        ("sourceSchemaName", "源Schema"), ("sourceName", "源对象"),
+        ("targetSchemaName", "目标Schema"), ("targetName", "目标对象"),
+        ("objectType", "类型"), ("migrate_size", "迁移量(MB)"),
+        ("dataProgress", "进度%"), ("dataStartTime", "开始"),
+        ("dataEndTime", "结束"), ("failed", "失败"),
+    ])
+    if isinstance(result, dict) and result.get("total") is not None:
+        print("共 %s 条" % result.get("total"))
 
 
 def cmd_task_watch(args):
@@ -659,7 +720,7 @@ def cmd_task_watch(args):
     client = get_client(args)
     ensure_token(client, args)
     mid = resolve_migration_id(client, args)
-    done_ok = {9, 22, 42, 48}
+    done_ok = {9, 22, 42, 48}                 # 完成/校验成功/修复完成/复验完成
     done_any = {8, 9, 16, 22, 23, 24, 26, 42, 43, 45, 48, 49, 51, 1804}
     try:
         while True:
@@ -672,9 +733,9 @@ def cmd_task_watch(args):
                               params={"migrationTaskId": mid})
             data = (prog or {}).get("data") or {}
             ts = time.strftime("%H:%M:%S")
-            print("[%s] 状态=%s(%s) 进度=%s%% 已迁移(KB)=%s"
+            print("[%s] 状态=%s(%s) 进度=%s%% 已迁移=%s"
                   % (ts, TASK_STATUS.get(status, "?"), status,
-                     data.get("progress"), data.get("success")))
+                     data.get("progress"), fmt_mb(data.get("success"))))
             if status in done_any:
                 print("任务已进入终态: %s(%s)" % (TASK_STATUS.get(status, "?"),
                                                  status))
@@ -1042,29 +1103,32 @@ def build_parser():
     add_common(p)
     p.set_defaults(func=cmd_task_delete)
 
-    p = tsub.add_parser("progress", help="迁移进度")
-    p.add_argument("task_id", type=int, nargs="?")
+    p = tsub.add_parser("progress", help="迁移进度(迁移量换算为MB)")
+    p.add_argument("task_id", type=int, nargs="?", help="任务 ID")
     p.add_argument("-m", "--migration-id", type=int)
     p.add_argument("--json", action="store_true")
     add_common(p)
-    p.set_defaults(func=lambda a: cmd_task_get(
-        a, "yashan/migration/offlineTask/progress"))
+    p.set_defaults(func=cmd_task_progress)
 
     p = tsub.add_parser("metrics", help="迁移指标")
     p.add_argument("task_id", type=int, nargs="?")
     p.add_argument("-m", "--migration-id", type=int)
+    p.add_argument("--hours", type=int, default=24,
+                   help="统计最近 N 小时(默认24)")
     p.add_argument("--json", action="store_true")
     add_common(p)
     p.set_defaults(func=lambda a: cmd_task_get(
-        a, "yashan/migration/offlineTask/metrics"))
+        a, "yashan/migration/offlineTask/metrics",
+        params={"migrationTaskId": None, "lastHours": a.hours}))
 
-    p = tsub.add_parser("objects", help="迁移对象列表")
+    p = tsub.add_parser("objects", help="迁移对象列表(迁移量换算为MB)")
     p.add_argument("task_id", type=int, nargs="?")
     p.add_argument("-m", "--migration-id", type=int)
+    p.add_argument("--page", type=int, default=1)
+    p.add_argument("--size", type=int, default=200)
     p.add_argument("--json", action="store_true")
     add_common(p)
-    p.set_defaults(func=lambda a: cmd_task_get(
-        a, "yashan/migration/offlineTask/objects"))
+    p.set_defaults(func=cmd_task_objects)
 
     p = tsub.add_parser("log", help="查看迁移日志")
     p.add_argument("task_id", type=int, nargs="?")

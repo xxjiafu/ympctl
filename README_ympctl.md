@@ -1,4 +1,4 @@
-# ympctl — YMP 迁移平台命令行工具（v0.1 基础版）
+# ympctl — YMP 迁移平台命令行工具（v0.2 监控增强）
 
 通过 YMP (YashanDB Migration Platform) 的 OpenAPI（`yashan/*` REST 接口）管理迁移任务：
 触发、监控、日志、报告下载，以及数据源/评估/校验等操作。
@@ -12,19 +12,25 @@ python ympctl.py login --url http://192.168.72.149:8090 --user admin
 python ympctl.py status
 python ympctl.py task list
 python ympctl.py task start 1          # 触发迁移（自动合并已保存配置）
-python ympctl.py task progress 1
+python ympctl.py task progress 1       # 迁移量已换算为 MB
+python ympctl.py task objects 1        # 迁移对象清单（含 MB 迁移量列）
 python ympctl.py task log 1 --lines 200
-python ympctl.py task watch 1          # 轮询等待迁移结束
+python ympctl.py task watch 1          # 轮询等待迁移结束（退出码 0=成功）
 python ympctl.py ds list
 python ympctl.py check info 1
-python ympctl.py report migration 1 -o report.zip
-python ympctl.py api GET yashan/platform/getInfo   # 任意接口透传
+python ympctl.py api GET yashan/platform/getInfo
 ```
+
+## v0.2 监控增强
+
+- `task progress` / `task objects` 迁移量 **KB→MB 换算显示**（YMP 原始单位为 KB，
+  即 Oracle 段大小——注意不是行数；小值附原始 KB）。
+- `task watch` 轮询至终态：退出码 0=成功终态(9/22/42/48)，1=失败/停止，130=手动中断。
+- `task metrics` 适配 `lastHours` 参数（默认 24 小时）。
 
 ## 关键实现说明
 
-- **登录**：`POST yashan/user/login`，密码 SHA256-Hex；Token 保存于 `~/.ympctl.json`，
-  后续请求带 `Access-Token`/`Authorization` 头。
+- **登录**：`POST yashan/user/login`，密码 SHA256-Hex；Token 保存于 `~/.ympctl.json`。
 - **触发迁移**：先 `GET yashan/migration/offlineTask/config` 取回已保存配置，
   合并 `{taskId, migrationTaskId, needAssessment, forceCreate}` 后提交 `startTask`。
 - **任务操作**：`stopTaskById`/`suspendTaskById`/`recoverTaskById`/`deleteTaskById/{id}`
@@ -41,5 +47,5 @@ report migration / report check（错误路径）/ api 透传。
 
 ## 已知限制
 
-- 迁移量字段（`dataTotalSize` 等）原始单位为 KB，暂未换算显示。
+- 数据源密码未加密适配（服务端要求 AES 密文，`ds add` 会报解密失败）。
 - 校验模块为基础封装（无差异明细）。
