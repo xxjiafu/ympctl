@@ -41,25 +41,19 @@ func cmdAssess(args []string) int {
 	return 2
 }
 
-func assessEnv(fs *flag.FlagSet) (urlF string, timeout int, jsonMode bool) {
-	fs.StringVar(&urlF, "url", "", "")
-	fs.IntVar(&timeout, "timeout", 0, "")
-	fs.BoolVar(&jsonMode, "json", false, "")
-	return
-}
-
 func assessHistory(args []string) int {
 	fs := flag.NewFlagSet("assess history", flag.ExitOnError)
-	urlF, timeout, jsonMode := assessEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	page := fs.Int("page", 1, "页码")
 	size := fs.Int("size", 20, "每页条数")
 	fs.Parse(args)
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	result := getMap(c.Get("yashan/objAssessmentTask/getHistoryLog",
 		paramsOf("pageNum", fmt.Sprintf("%d", *page),
 			"pageSize", fmt.Sprintf("%d", *size))))
 	records := getList(result["records"])
-	if jsonMode {
+	if env.jsonMode {
 		emit(result, true)
 		return 0
 	}
@@ -77,25 +71,27 @@ func assessHistory(args []string) int {
 
 func assessByID(args []string, endpoint, help string) int {
 	fs := flag.NewFlagSet("assess "+endpoint, flag.ExitOnError)
-	urlF, timeout, jsonMode := assessEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	fs.Parse(args)
 	pos := fs.Args()
 	if len(pos) < 1 {
 		fail("需要评估任务 ID: %s", help)
 	}
 	id := numInt(pos[0])
-	c := dsClient(urlF, timeout)
-	emit(c.Get(fmt.Sprintf("yashan/objAssessmentTask/%s/%d", endpoint, id), nil), jsonMode)
+	c := dsClient(env.urlF, env.timeout)
+	emit(c.Get(fmt.Sprintf("yashan/objAssessmentTask/%s/%d", endpoint, id), nil), env.jsonMode)
 	return 0
 }
 
 func assessObjects(args []string) int {
 	fs := flag.NewFlagSet("assess objects", flag.ExitOnError)
-	urlF, timeout, jsonMode := assessEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	var data string
 	fs.StringVar(&data, "data", "", "查询参数 JSON(转为查询串)")
 	fs.Parse(args)
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	params := url.Values{}
 	if raw := parseDataArg(data); raw != nil {
 		m, err := decodeAny(raw)
@@ -113,13 +109,14 @@ func assessObjects(args []string) int {
 			}
 		}
 	}
-	emit(c.Get("yashan/objAssessmentTask/getObjAssessmentSituation", params), jsonMode)
+	emit(c.Get("yashan/objAssessmentTask/getObjAssessmentSituation", params), env.jsonMode)
 	return 0
 }
 
 func assessPost(args []string, endpoint string) int {
 	fs := flag.NewFlagSet("assess "+endpoint, flag.ExitOnError)
-	urlF, timeout, jsonMode := assessEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	var data string
 	fs.StringVar(&data, "data", "", "请求 JSON 或 @file")
 	fs.Parse(args)
@@ -127,7 +124,7 @@ func assessPost(args []string, endpoint string) int {
 	if raw == nil {
 		fail("需要 --data JSON")
 	}
-	c := dsClient(urlF, timeout)
-	emit(c.PostRaw("yashan/objAssessmentTask/"+endpoint, raw), jsonMode)
+	c := dsClient(env.urlF, env.timeout)
+	emit(c.PostRaw("yashan/objAssessmentTask/"+endpoint, raw), env.jsonMode)
 	return 0
 }

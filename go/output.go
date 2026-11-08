@@ -180,6 +180,10 @@ func printKV(v any, indent int) {
 		fmt.Printf("%s%s\n", strings.Repeat(" ", indent), fmtCell(v))
 		return
 	}
+	if m == nil {
+		fmt.Println("(空)")
+		return
+	}
 	// 稳定排序输出
 	keys := make([]string, 0, len(m))
 	for k := range m {

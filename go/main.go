@@ -82,6 +82,7 @@ var valueFlags = map[string]bool{
 	"lines": true, "interval": true, "output": true, "o": true,
 	"migration-id": true, "m": true, "modules": true, "hours": true,
 	"cascade": true, "rows": true, "file": true, "f": true,
+	"blacklist": true,
 }
 
 // reorderArgs 把出现在位置参数之后的选项挪到前面，兼容 `task start 1 --json` 写法。

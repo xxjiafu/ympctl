@@ -44,3 +44,13 @@ GOOS=linux GOARCH=amd64 go build -o ympctl .   # Linux
 1=存在差异或失败；130=手动中断（Ctrl+C）。
 
 环境变量：`YMP_URL` / `YMP_USER` / `YMP_PASSWORD` / `YMP_TOKEN`。
+
+## 测试
+
+```bash
+go test ./...        # 单元测试: 加密向量/辅助函数/参数重排
+bash regression.sh   # 集成回归(需可访问的 YMP 实例): 88 项全命令验证
+```
+
+回归脚本对差异类断言采用动态校验(输出与当时数据状态自洽)，
+不触发真实迁移、不改密码、不动数据。

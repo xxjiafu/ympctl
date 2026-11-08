@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -132,6 +133,13 @@ func (c *Client) Request(method, path string, params url.Values, body []byte,
 		return data, nil
 	}
 	if resp.StatusCode >= 400 {
+		// 与 Python 版一致: 优先解析响应体中的 YMP 错误码
+		if len(bytes.TrimSpace(data)) > 0 && bytes.TrimSpace(data)[0] == '{' {
+			var r ympResp
+			if json.Unmarshal(bytes.TrimSpace(data), &r) == nil && r.Code != "" {
+				return nil, fmt.Errorf("YMP 错误 %s: %s", r.Code, r.Message)
+			}
+		}
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(data, 200))
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
@@ -203,6 +211,19 @@ func mustAny(b []byte) any {
 		fail("解析响应失败: %v", err)
 	}
 	return v
+}
+
+// envOpts: 通用选项(避免把 flag 指针绑到命名返回值上——Parse 在函数返回后才执行)
+type envOpts struct {
+	urlF     string
+	timeout  int
+	jsonMode bool
+}
+
+func addEnv(fs *flag.FlagSet, o *envOpts) {
+	fs.StringVar(&o.urlF, "url", "", "YMP 地址")
+	fs.IntVar(&o.timeout, "timeout", 0, "HTTP 超时秒数")
+	fs.BoolVar(&o.jsonMode, "json", false, "输出原始 JSON")
 }
 
 // ------------------------------------------------- 登录/加密

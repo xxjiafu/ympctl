@@ -72,24 +72,18 @@ func cmdCheck(args []string) int {
 	return 2
 }
 
-func checkEnv(fs *flag.FlagSet) (urlF string, timeout int, jsonMode bool) {
-	fs.StringVar(&urlF, "url", "", "")
-	fs.IntVar(&timeout, "timeout", 0, "")
-	fs.BoolVar(&jsonMode, "json", false, "")
-	return
-}
-
 func checkList(args []string) int {
 	fs := flag.NewFlagSet("check list", flag.ExitOnError)
-	urlF, timeout, jsonMode := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	page := fs.Int("page", 1, "页码")
 	all := fs.Bool("all", false, "也显示无校验子任务的主任务")
 	fs.Parse(args)
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	result := getMap(c.Get("yashan/task/getTaskList",
 		paramsOf("pageNum", fmt.Sprintf("%d", *page), "pageSize", "100")))
 	records := getList(result["records"])
-	if jsonMode {
+	if env.jsonMode {
 		emit(result, true)
 		return 0
 	}
@@ -140,14 +134,15 @@ func checkList(args []string) int {
 
 func checkInfo(args []string) int {
 	fs := flag.NewFlagSet("check info", flag.ExitOnError)
-	urlF, timeout, jsonMode := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	brief := fs.Bool("brief", false, "只显示概要")
 	fs.Parse(args)
 	pos := fs.Args()
 	if len(pos) < 1 {
 		fail("需要校验任务 ID")
 	}
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	cid, ct := resolveCheckID(c, int(numInt(pos[0])))
 	info := getMap(c.Get(fmt.Sprintf("yashan/check/status/info/%d", cid), nil))
 	merged := map[string]any{}
@@ -157,7 +152,7 @@ func checkInfo(args []string) int {
 	for k, v := range info {
 		merged[k] = v
 	}
-	if jsonMode {
+	if env.jsonMode {
 		emit(merged, true)
 		return 0
 	}
@@ -194,16 +189,17 @@ func checkInfo(args []string) int {
 
 func checkStatistics(args []string) int {
 	fs := flag.NewFlagSet("check statistics", flag.ExitOnError)
-	urlF, timeout, jsonMode := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	fs.Parse(args)
 	pos := fs.Args()
 	if len(pos) < 1 {
 		fail("需要校验任务 ID")
 	}
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	cid, _ := resolveCheckID(c, int(numInt(pos[0])))
 	result := getMap(c.Get(fmt.Sprintf("yashan/check/status/statistics/%d", cid), nil))
-	if jsonMode {
+	if env.jsonMode {
 		emit(result, true)
 		return 0
 	}
@@ -230,16 +226,17 @@ func checkStatistics(args []string) int {
 }
 func checkResultCmd(args []string) int {
 	fs := flag.NewFlagSet("check result", flag.ExitOnError)
-	urlF, timeout, jsonMode := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	fs.Parse(args)
 	pos := fs.Args()
 	if len(pos) < 1 {
 		fail("需要表对象 ID(check tables 列表的 id 列)")
 	}
 	objID := numInt(pos[0])
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	result := getMap(c.Get(fmt.Sprintf("yashan/check/status/result/%d", objID), nil))
-	if jsonMode {
+	if env.jsonMode {
 		emit(result, true)
 		return 0
 	}
@@ -303,7 +300,8 @@ func orDash(v any) string {
 
 func checkTables(args []string) int {
 	fs := flag.NewFlagSet("check tables", flag.ExitOnError)
-	urlF, timeout, jsonMode := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	page := fs.Int("page", 1, "页码")
 	size := fs.Int("size", 200, "每页条数")
 	fs.Parse(args)
@@ -311,14 +309,14 @@ func checkTables(args []string) int {
 	if len(pos) < 1 {
 		fail("需要校验任务 ID")
 	}
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	cid, _ := resolveCheckID(c, int(numInt(pos[0])))
 	result := getMap(c.Get("yashan/check/status/detail",
 		paramsOf("checkTaskId", fmt.Sprintf("%d", cid),
 			"pageNum", fmt.Sprintf("%d", *page),
 			"pageSize", fmt.Sprintf("%d", *size))))
 	tables := getList(result["tableDetail"])
-	if jsonMode {
+	if env.jsonMode {
 		emit(result, true)
 		return 0
 	}
@@ -355,7 +353,8 @@ func checkTables(args []string) int {
 
 func checkShowdiff(args []string) int {
 	fs := flag.NewFlagSet("check showdiff", flag.ExitOnError)
-	urlF, timeout, _ := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	all := fs.Bool("all", false, "一致表也输出([OK]行)")
 	detail := fs.Bool("detail", false, "每张差异表追加行数/分类/不一致列")
 	rowsN := fs.Int("rows", 0, "每表附带行级差异示例条数(配合 --detail)")
@@ -365,7 +364,7 @@ func checkShowdiff(args []string) int {
 	if len(pos) < 1 {
 		fail("需要校验任务 ID")
 	}
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	cid, _ := resolveCheckID(c, int(numInt(pos[0])))
 	result := getMap(c.Get("yashan/check/status/detail",
 		paramsOf("checkTaskId", fmt.Sprintf("%d", cid),
@@ -449,7 +448,8 @@ func checkShowdiff(args []string) int {
 
 func checkRows(args []string) int {
 	fs := flag.NewFlagSet("check rows", flag.ExitOnError)
-	urlF, timeout, jsonMode := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	page := fs.Int("page", 1, "页码")
 	size := fs.Int("size", 50, "每页条数")
 	fs.Parse(args)
@@ -458,13 +458,13 @@ func checkRows(args []string) int {
 		fail("需要表对象 ID")
 	}
 	objID := numInt(pos[0])
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	result := getMap(c.Get("yashan/check/status/resultDetail",
 		paramsOf("checkObjId", fmt.Sprintf("%d", objID),
 			"pageNum", fmt.Sprintf("%d", *page),
 			"pageSize", fmt.Sprintf("%d", *size))))
 	records := getList(result["records"])
-	if jsonMode {
+	if env.jsonMode {
 		emit(result, true)
 		return 0
 	}
@@ -496,16 +496,17 @@ func checkRows(args []string) int {
 
 func checkAction(args []string, op, what string) int {
 	fs := flag.NewFlagSet("check "+what, flag.ExitOnError)
-	urlF, timeout, jsonMode := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	fs.Parse(args)
 	pos := fs.Args()
 	if len(pos) < 1 {
 		fail("需要校验任务 ID")
 	}
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	cid, _ := resolveCheckID(c, int(numInt(pos[0])))
 	result := c.PostRaw(fmt.Sprintf("yashan/check/task/%s/%d", op, cid), nil)
-	if jsonMode {
+	if env.jsonMode {
 		emit(result, true)
 		return 0
 	}
@@ -519,20 +520,19 @@ func checkAction(args []string, op, what string) int {
 
 func checkWatch(args []string) int {
 	fs := flag.NewFlagSet("check watch", flag.ExitOnError)
-	urlF, timeout, _ := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	interval := fs.Float64("interval", 3.0, "轮询间隔秒")
 	fs.Parse(args)
 	pos := fs.Args()
 	if len(pos) < 1 {
 		fail("需要校验任务 ID")
 	}
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	cid, _ := resolveCheckID(c, int(numInt(pos[0])))
 	doneOK := map[int]bool{22: true, 42: true, 48: true}
-	doneAny := map[int]bool{20: true, 21: true, 22: true, 23: true, 24: true,
-		25: true, 40: true, 41: true, 42: true, 43: true, 44: true,
-		45: true, 46: true, 47: true, 48: true, 49: true, 50: true,
-		51: true, 53: true, 54: true}
+	doneAny := map[int]bool{22: true, 23: true, 24: true, 42: true,
+		43: true, 45: true, 48: true, 49: true, 51: true}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	for {
@@ -563,33 +563,39 @@ func checkWatch(args []string) int {
 
 func checkLog(args []string) int {
 	fs := flag.NewFlagSet("check log", flag.ExitOnError)
-	urlF, timeout, jsonMode := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	lines := fs.Int("lines", 0, "日志行数")
 	fs.Parse(args)
 	pos := fs.Args()
 	if len(pos) < 1 {
 		fail("需要校验任务 ID")
 	}
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	cid, _ := resolveCheckID(c, int(numInt(pos[0])))
 	params := paramsOf("checkTaskId", fmt.Sprintf("%d", cid))
 	if *lines > 0 {
 		params.Add("logLine", fmt.Sprintf("%d", *lines))
 	}
-	emit(c.Get("yashan/check/status/log/view", params), jsonMode)
+	emit(c.Get("yashan/check/status/log/view", params), env.jsonMode)
 	return 0
 }
 
 func checkLogDL(args []string) int {
 	fs := flag.NewFlagSet("check log-dl", flag.ExitOnError)
-	urlF, timeout, _ := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	output := fs.String("output", "", "输出文件名")
+	o := fs.String("o", "", "输出文件名(与 --output 等价)")
 	fs.Parse(args)
+	if *output == "" {
+		output = o
+	}
 	pos := fs.Args()
 	if len(pos) < 1 {
 		fail("需要校验任务 ID")
 	}
-	c := dsClient(urlF, timeout)
+	c := dsClient(env.urlF, env.timeout)
 	cid, _ := resolveCheckID(c, int(numInt(pos[0])))
 	out := *output
 	if out == "" {
@@ -604,7 +610,8 @@ func checkLogDL(args []string) int {
 
 func checkPost(args []string, path string) int {
 	fs := flag.NewFlagSet("check post", flag.ExitOnError)
-	urlF, timeout, jsonMode := checkEnv(fs)
+	var env envOpts
+	addEnv(fs, &env)
 	var data string
 	fs.StringVar(&data, "data", "", "请求 JSON 或 @file")
 	fs.Parse(args)
@@ -612,7 +619,7 @@ func checkPost(args []string, path string) int {
 	if raw == nil {
 		fail("需要 --data JSON")
 	}
-	c := dsClient(urlF, timeout)
-	emit(c.PostRaw(path, raw), jsonMode)
+	c := dsClient(env.urlF, env.timeout)
+	emit(c.PostRaw(path, raw), env.jsonMode)
 	return 0
 }

@@ -1316,8 +1316,7 @@ def cmd_check_watch(args):
     ensure_token(client, args)
     cid, _ = resolve_check_id(client, args)
     done_ok = {22, 42, 48}
-    done_any = {20, 21, 22, 23, 24, 25, 40, 41, 42, 43, 44, 45,
-                46, 47, 48, 49, 50, 51, 53, 54}
+    done_any = {22, 23, 24, 42, 43, 45, 48, 49, 51}
     try:
         while True:
             result = client.get("yashan/check/status/statistics/%d" % cid)
