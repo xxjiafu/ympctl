@@ -565,7 +565,8 @@ func checkLog(args []string) int {
 	fs := flag.NewFlagSet("check log", flag.ExitOnError)
 	var env envOpts
 	addEnv(fs, &env)
-	lines := fs.Int("lines", 0, "日志行数")
+	// logLine 为该接口必填参数, 默认取最后 100 行
+	lines := fs.Int("lines", 100, "日志行数(必填参数, 默认100)")
 	fs.Parse(args)
 	pos := fs.Args()
 	if len(pos) < 1 {
@@ -573,10 +574,11 @@ func checkLog(args []string) int {
 	}
 	c := dsClient(env.urlF, env.timeout)
 	cid, _ := resolveCheckID(c, int(numInt(pos[0])))
-	params := paramsOf("checkTaskId", fmt.Sprintf("%d", cid))
-	if *lines > 0 {
-		params.Add("logLine", fmt.Sprintf("%d", *lines))
+	if *lines <= 0 {
+		*lines = 100
 	}
+	params := paramsOf("checkTaskId", fmt.Sprintf("%d", cid),
+		"logLine", fmt.Sprintf("%d", *lines))
 	emit(c.Get("yashan/check/status/log/view", params), env.jsonMode)
 	return 0
 }
