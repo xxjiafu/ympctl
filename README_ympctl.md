@@ -107,3 +107,16 @@ ds list / show / schemas / test（含密码加密） / add（服务端连通性�
 **check list / start(真实触发三轮校验) / info / statistics / watch / tables / showdiff /
 rows / result（真实差异：目标端插入第3行后全部命中）** / report migration /
 report check（错误路径）/ api 透传 / encrypt。
+
+## Go 版本
+
+仓库同时提供功能对齐的 Go 实现（`go/` 目录）：纯标准库、单二进制、零依赖，
+共用 `~/.ympctl.json` 配置与 Token，加密结果与 Python 版逐字节一致。
+
+```bash
+cd go
+go build -o ympctl.exe .
+./ympctl.exe task list
+```
+
+详见 [go/README.md](go/README.md)。Releases 页面提供各平台编译产物。
