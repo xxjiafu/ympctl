@@ -839,6 +839,75 @@ def cmd_task_watch(args):
         return 130
 
 
+CHECK_STATUS = {
+    20: "校验等待", 21: "校验运行中", 22: "校验完成", 23: "校验失败",
+    24: "校验已停止", 25: "校验停止中", 26: "任务创建成功",
+    40: "修复等待", 41: "修复运行中", 42: "修复完成", 43: "修复失败",
+    44: "修复取消中", 45: "修复已取消",
+    46: "复验等待", 47: "复验运行中", 48: "复验完成", 49: "复验失败",
+    50: "复验取消中", 51: "复验已取消",
+    53: "哈希比对中", 54: "哈希确认中",
+}
+
+CHECK_RESULT = {0: "一致", 1: "不一致", 2: "存在差异", 3: "未校验"}
+
+# 行级差异类型（来源：YMP 校验报告 Ize 映射）
+DIFF_TYPE = {0: "冗余", 1: "缺失", 2: "差异", 4: "非法值", 5: "校验键为NULL"}
+
+# 表级枚举（与行级不同：detail.tableDetail.diffTypes / checkResult）
+TABLE_DIFF_TYPE = {1: "数据不一致", 2: "目标表不存在", 3: "结构不一致",
+                   9: "源表不存在"}
+TABLE_CHECK_RESULT = {0: "一致", 1: "不一致", 6: "校验失败", 7: "不一致",
+                      8: "跳过"}
+
+
+def _parse_row_data(v):
+    """resultDetail 的 sourceData/targetData 是 JSON 数组字符串，转可读文本。"""
+    if v is None:
+        return "-"
+    if isinstance(v, str):
+        try:
+            arr = json.loads(v)
+            if isinstance(arr, list):
+                return ",".join(str(x) for x in arr)
+        except ValueError:
+            pass
+        return v
+    if isinstance(v, list):
+        return ",".join(str(x) for x in v)
+    return str(v)
+
+
+def resolve_check_id(client, args):
+    """把主任务 ID 或校验子任务 ID 统一解析为 (checkTaskId, checkTask)。
+
+    优先按主任务 ID 查 getTaskBaseInfo 取嵌套的 checkTask；若该主任务
+    没有校验子任务，则把给定值当作 checkTaskId，并反查主任务补全信息。
+    """
+    cid = args.check_id
+    base = client.get("yashan/task/getTaskBaseInfo/%d" % cid)
+    ct = (base or {}).get("checkTask") or {}
+    if ct.get("id"):
+        return int(ct["id"]), ct
+    info = client.get("yashan/check/status/info/%d" % cid)
+    if info and info.get("id"):
+        for r in (client.get("yashan/task/getTaskList",
+                             params={"pageNum": 1, "pageSize": 100})
+                  .get("records") or []):
+            try:
+                b = client.get("yashan/task/getTaskBaseInfo/%d" % r["id"])
+            except SystemExit:
+                continue
+            t = (b or {}).get("checkTask") or {}
+            if t.get("id") == int(info["id"]):
+                merged = dict(t)
+                merged.update(info)
+                return int(info["id"]), merged
+        return int(info["id"]), info
+    die("任务 %s 不是校验任务(无 checkTask 子任务)，也无法作为 checkTaskId "
+        "定位；请用 check list 查看可用的校验任务" % cid)
+
+
 # ---------------------------- 数据源
 
 
@@ -953,49 +1022,258 @@ def cmd_assess_cmd(args, path, method="GET", params=None):
 
 
 def cmd_check_list(args):
+    """列出校验任务(主任务ID + checkTaskId + 状态)，便于取 start 用的 ID。"""
     client = get_client(args)
     ensure_token(client, args)
-    payload = parse_data_arg(args)
-    if payload is None:
-        payload = {"pageNum": args.page, "pageSize": args.size}
-    result = client.post("yashan/check/task/obj/list", data=payload)
-    emit(result, args.json)
+    result = client.get("yashan/task/getTaskList",
+                        params={"pageNum": args.page, "pageSize": 100})
+    records = result.get("records") if isinstance(result, dict) else result
+    if args.json:
+        emit(result, True)
+        return
+    shown = []
+    for r in records or []:
+        try:
+            base = client.get("yashan/task/getTaskBaseInfo/%d" % r["id"])
+        except SystemExit:
+            continue  # 单个任务详情失败不阻塞列表
+        ct = (base or {}).get("checkTask")
+        if not ct and not args.all:
+            continue
+        if ct:
+            cs = ct.get("checkStatus")
+            shown.append({
+                "headTaskId": r.get("id"),
+                "headTaskName": r.get("taskName"),
+                "checkTaskId": ct.get("id"),
+                "checkTaskName": ct.get("checkTaskName"),
+                "checkStatus": "%s(%s)" % (CHECK_STATUS.get(cs, "?"), cs),
+                "checkProcess": ct.get("checkProcess"),
+                "checkResult": CHECK_RESULT.get(ct.get("checkResult"),
+                                                ct.get("checkResult")),
+                "startTime": ct.get("startTime"),
+            })
+        else:
+            shown.append({"headTaskId": r.get("id"),
+                          "headTaskName": r.get("taskName"),
+                          "checkTaskId": "-",
+                          "checkStatus": "(无校验子任务)"})
+    print_table(shown, [
+        ("headTaskId", "主任务ID"), ("headTaskName", "主任务名"),
+        ("checkTaskId", "校验ID"), ("checkTaskName", "校验名"),
+        ("checkStatus", "校验状态"), ("checkProcess", "进度%"),
+        ("checkResult", "结果"), ("startTime", "开始时间"),
+    ])
+    print("提示: check start/stop/info 等命令的 ID 接受上面任一 ID，"
+          "会自动解析")
 
 
 def cmd_check_info(args):
     client = get_client(args)
     ensure_token(client, args)
-    result = client.get("yashan/check/status/info/%d" % args.check_id)
-    emit(result, args.json)
+    cid, ct = resolve_check_id(client, args)
+    result = client.get("yashan/check/status/info/%d" % cid) or {}
+    merged = dict(ct) if isinstance(ct, dict) else {}
+    merged.update(result)
+    if args.json:
+        emit(merged, True)
+        return
+    st = merged.get("checkStatus")
+    print("== 校验任务 %s (checkTaskId=%s) ==" % (
+        merged.get("checkTaskName"), cid))
+    print_kv({
+        "状态": "%s(%s)" % (CHECK_STATUS.get(st, "?"), st),
+        "结果": CHECK_RESULT.get(merged.get("checkResult"),
+                                 merged.get("checkResult")),
+        "进度": merged.get("checkProcess"),
+        "开始时间": merged.get("startTime"),
+        "结束时间": merged.get("endTime"),
+        "校验类型": merged.get("checkType"),
+        "schema": merged.get("schemaList"),
+    })
+    if not args.brief:
+        extra = {k: v for k, v in merged.items()
+                 if k not in ("checkTaskName", "checkStatus", "checkResult",
+                              "checkProcess", "startTime", "endTime",
+                              "source", "target", "checkTaskConfig") and v}
+        if extra:
+            print("-- 其他 --")
+            print_kv(extra)
 
 
 def cmd_check_statistics(args):
     client = get_client(args)
     ensure_token(client, args)
-    result = client.get("yashan/check/status/statistics/%d" % args.check_id)
-    emit(result, args.json)
+    cid, _ = resolve_check_id(client, args)
+    result = client.get("yashan/check/status/statistics/%d" % cid)
+    if args.json:
+        emit(result, True)
+        return
+    disp = dict(result) if isinstance(result, dict) else result
+    if isinstance(disp, dict):
+        disp["status"] = "%s(%s)" % (CHECK_STATUS.get(disp.get("status"), "?"),
+                                     disp.get("status"))
+        disp["result"] = CHECK_RESULT.get(disp.get("result"),
+                                          disp.get("result"))
+        rpi = disp.get("rowProgressInfo")
+        if isinstance(rpi, dict):
+            rpi = dict(rpi)
+            rpi["progress"] = "%s%%" % rpi.get("progress")
+            disp["rowProgressInfo"] = rpi
+    print("== 校验统计 (checkTaskId=%s) ==" % cid)
+    print_kv(disp)
 
 
 def cmd_check_result(args):
+    """单表校验结果汇总：含不一致列名(diffColNames)、行数与差异分类计数。"""
     client = get_client(args)
     ensure_token(client, args)
-    result = client.get("yashan/check/status/result/%d" % args.check_id)
-    emit(result, args.json)
+    result = client.get("yashan/check/status/result/%d" % args.check_obj_id)
+    if args.json:
+        emit(result, True)
+        return
+    inc = result.get("dataInconsistent") or {}
+    print("== 单表校验结果 (checkObjId=%s) ==" % args.check_obj_id)
+    print_kv({
+        "对比": "一致" if result.get("same") else "不一致",
+        "源行数": result.get("sourceRow"),
+        "目标行数": result.get("targetRow"),
+        "差异行数": result.get("diffRows"),
+        "不一致列名": result.get("diffColNames") or "-",
+        "源主键": result.get("sourcePkName") or "-",
+        "目标主键": result.get("targetPkName") or "-",
+        "差异分类": {
+            "冗余(目标端多出)": inc.get("notInSourceNum"),
+            "缺失(目标端缺少)": inc.get("notInTargetNum"),
+            "数据不一致": inc.get("diffNum"),
+            "非法值": inc.get("invalidNum"),
+            "校验键为NULL": inc.get("uniqueKeyNullNum"),
+        },
+    })
+    if result.get("sourceLobColumn"):
+        print("LOB 列: %s" % ",".join(result["sourceLobColumn"]))
+    if result.get("errorMessage"):
+        print("错误: %s" % result["errorMessage"])
 
 
+def cmd_check_tables(args):
+    """表级校验结果列表：哪些表不一致(checkResult=1)一目了然。"""
+    client = get_client(args)
+    ensure_token(client, args)
+    cid, _ = resolve_check_id(client, args)
+    result = client.get("yashan/check/status/detail",
+                        params={"checkTaskId": cid, "pageNum": args.page,
+                                "pageSize": args.size})
+    tables = result.get("tableDetail") or []
+    if args.json:
+        emit(result, True)
+        return
+    shown = []
+    for t in tables:
+        t = dict(t)
+        t["source_table"] = "%s.%s" % (t.get("sourceSchemaName"),
+                                       t.get("sourceTable"))
+        t["target_table"] = "%s.%s" % (t.get("targetSchemaName"),
+                                       t.get("targetTable"))
+        cr = t.get("checkResult")
+        t["checkResult"] = TABLE_CHECK_RESULT.get(cr, cr)
+        dt = t.get("diffTypes")
+        t["diffTypes"] = TABLE_DIFF_TYPE.get(dt, dt)
+        shown.append(t)
+    print_table(shown, [
+        ("source_table", "源表"), ("target_table", "目标表"),
+        ("checkResult", "结果"), ("diffTypes", "差异类型"),
+        ("sourceRowCount", "源行数"), ("targetRowCount", "目标行数"),
+        ("checkProgress", "进度%"), ("objectStatus", "状态"),
+    ])
+    print("共 %s 张表" % result.get("total"))
 
 
+def cmd_check_showdiff(args):
+    """按对比报告格式输出：[NO] 源表 == 目标表；发现差异时退出码为 1。"""
+    client = get_client(args)
+    ensure_token(client, args)
+    cid, ct = resolve_check_id(client, args)
+    result = client.get("yashan/check/status/detail",
+                        params={"checkTaskId": cid, "pageNum": 1,
+                                "pageSize": args.size})
+    tables = result.get("tableDetail") or []
+    print("====SHOW DIFF=====")
+    print("数据校验对比结果")
+    has_diff = False
+    for t in tables:
+        bad = t.get("checkResult") not in (0, None)
+        if bad:
+            has_diff = True
+        elif not args.all:
+            continue
+        print("%s %s.%s == %s.%s" % (
+            "[NO]" if bad else "[OK]",
+            t.get("sourceSchemaName"), t.get("sourceTable"),
+            t.get("targetSchemaName"), t.get("targetTable")))
+        if bad and args.detail:
+            summ = client.get("yashan/check/status/result/%d" % t["id"]) or {}
+            inc = summ.get("dataInconsistent") or {}
+            print("    行数: 源=%s 目标=%s 差异行=%s"
+                  % (summ.get("sourceRow"), summ.get("targetRow"),
+                     summ.get("diffRows")))
+            cats = [("冗余(目标多出)", inc.get("notInSourceNum")),
+                    ("缺失(目标缺少)", inc.get("notInTargetNum")),
+                    ("数据不一致", inc.get("diffNum")),
+                    ("非法值", inc.get("invalidNum")),
+                    ("校验键为NULL", inc.get("uniqueKeyNullNum"))]
+            print("    分类: %s" % "  ".join(
+                "%s=%s" % (k, v) for k, v in cats if v))
+            cols = summ.get("diffColNames") or []
+            print("    不一致列: %s" % (",".join(cols) if cols else "-"))
+            if args.rows:
+                rd = client.get("yashan/check/status/resultDetail",
+                                params={"checkObjId": t["id"], "pageNum": 1,
+                                        "pageSize": args.rows})
+                for r in (rd.get("records") or []):
+                    print("    [%s] 源=%s / 目标=%s 差异列=%s" % (
+                        DIFF_TYPE.get(r.get("resultType"),
+                                      r.get("resultType")),
+                        _parse_row_data(r.get("sourceData")),
+                        _parse_row_data(r.get("targetData")),
+                        r.get("diffColName") or "-"))
+    print("====CHECK_COMPARE_END=====")
+    return 1 if has_diff else 0
 
 
-
-
-
+def cmd_check_rows(args):
+    """行级差异明细：冗余/缺失/不一致的具体行数据与差异列。"""
+    client = get_client(args)
+    ensure_token(client, args)
+    result = client.get("yashan/check/status/resultDetail",
+                        params={"checkObjId": args.check_obj_id,
+                                "pageNum": args.page, "pageSize": args.size})
+    records = result.get("records") if isinstance(result, dict) else result
+    if args.json:
+        emit(result, True)
+        return
+    shown = []
+    for r in records or []:
+        r = dict(r)
+        r["resultType"] = DIFF_TYPE.get(r.get("resultType"),
+                                        r.get("resultType"))
+        r["sourceData"] = _parse_row_data(r.get("sourceData"))
+        r["targetData"] = _parse_row_data(r.get("targetData"))
+        shown.append(r)
+    print_table(shown, [
+        ("resultType", "差异类型"), ("sourcePk", "源主键"),
+        ("targetPk", "目标主键"), ("sourceData", "源数据"),
+        ("targetData", "目标数据"), ("diffColName", "差异列"),
+    ])
+    if isinstance(result, dict) and result.get("total") is not None:
+        print("共 %s 条差异行" % result.get("total"))
 
 
 def cmd_check_log(args):
     client = get_client(args)
     ensure_token(client, args)
-    params = {"checkTaskId": args.check_id}
+    cid, _ = resolve_check_id(client, args)
+    params = {"checkTaskId": cid}
     if args.lines:
         params["logLine"] = args.lines
     result = client.get("yashan/check/status/log/view", params=params)
@@ -1005,25 +1283,61 @@ def cmd_check_log(args):
 def cmd_check_download_log(args):
     client = get_client(args)
     ensure_token(client, args)
-    out = args.output or ("check-task-%s-log.zip" % args.check_id)
+    cid, _ = resolve_check_id(client, args)
+    out = args.output or ("check-task-%s-log.zip" % cid)
     client.get("yashan/check/status/log/download",
-               params={"checkTaskId": args.check_id}, out_file=out,
+               params={"checkTaskId": cid}, out_file=out,
                headers={"Content-Type": "application/zip"})
     print("已下载: %s" % out)
 
 
-def cmd_check_action_id(args, path_tmpl, confirm_msg=None):
+def cmd_check_action_id(args, path_tmpl, confirm_msg=None, what=""):
     client = get_client(args)
     ensure_token(client, args)
+    cid, _ = resolve_check_id(client, args)
     if confirm_msg and not args.yes:
         if input(confirm_msg).strip().lower() not in ("y", "yes"):
             print("已取消")
             return
-    result = client.post(path_tmpl % args.check_id)
-    emit(result, args.json)
+    result = client.post(path_tmpl % cid)
+    if args.json:
+        emit(result, True)
+        return
+    print("%s指令已受理（checkTaskId=%s）" % (what, cid))
+    if isinstance(result, (dict, list)):
+        print_kv(result)
+    print("查看状态: ympctl check info %s   统计: ympctl check statistics %s"
+          % (cid, cid))
 
 
-
+def cmd_check_watch(args):
+    """轮询校验任务直至终态(脚本等待用)，退出码 0=校验通过。"""
+    client = get_client(args)
+    ensure_token(client, args)
+    cid, _ = resolve_check_id(client, args)
+    done_ok = {22, 42, 48}
+    done_any = {20, 21, 22, 23, 24, 25, 40, 41, 42, 43, 44, 45,
+                46, 47, 48, 49, 50, 51, 53, 54}
+    try:
+        while True:
+            result = client.get("yashan/check/status/statistics/%d" % cid)
+            st = result.get("status")
+            rpi = result.get("rowProgressInfo") or {}
+            ts = time.strftime("%H:%M:%S")
+            print("[%s] 状态=%s(%s) 行进度=%s%% 结果=%s (行 %s/%s, 失败 %s)"
+                  % (ts, CHECK_STATUS.get(st, "?"), st,
+                     rpi.get("progress"),
+                     CHECK_RESULT.get(result.get("result"),
+                                      result.get("result")),
+                     rpi.get("completeRows"), rpi.get("totalRows"),
+                     rpi.get("failedRows")))
+            if st in done_any:
+                print("校验已进入终态: %s(%s)" % (CHECK_STATUS.get(st, "?"), st))
+                ok = st in done_ok and result.get("result") in (0, 4)
+                return 0 if ok else 1
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        return 130
 
 
 def cmd_check_cmd(args, path):
@@ -1385,16 +1699,18 @@ def build_parser():
     cp = sub.add_parser("check", help="数据校验任务")
     csub = cp.add_subparsers(dest="action")
 
-    p = csub.add_parser("list", help="校验对象列表")
+    p = csub.add_parser("list", help="校验任务列表(含 checkTaskId)")
     p.add_argument("--page", type=int, default=1)
-    p.add_argument("--size", type=int, default=20)
-    p.add_argument("--data", help="查询 JSON（覆盖默认分页）")
+    p.add_argument("--all", action="store_true",
+                   help="也显示无校验子任务的主任务")
     p.add_argument("--json", action="store_true")
     add_common(p)
     p.set_defaults(func=cmd_check_list)
 
     p = csub.add_parser("info", help="校验任务状态信息")
-    p.add_argument("check_id", type=int)
+    p.add_argument("check_id", type=int,
+                   help="主任务ID或checkTaskId，自动解析")
+    p.add_argument("--brief", action="store_true")
     p.add_argument("--json", action="store_true")
     add_common(p)
     p.set_defaults(func=cmd_check_info)
@@ -1405,11 +1721,43 @@ def build_parser():
     add_common(p)
     p.set_defaults(func=cmd_check_statistics)
 
-    p = csub.add_parser("result", help="校验结果")
-    p.add_argument("check_id", type=int)
+    p = csub.add_parser("result", help="单表校验结果汇总(含不一致列名)")
+    p.add_argument("check_obj_id", type=int,
+                   help="表对象ID，来自 check tables 列表的 id 列")
     p.add_argument("--json", action="store_true")
     add_common(p)
     p.set_defaults(func=cmd_check_result)
+
+    p = csub.add_parser("tables", help="表级校验结果(哪些表不一致)")
+    p.add_argument("check_id", type=int,
+                   help="主任务ID或checkTaskId，自动解析")
+    p.add_argument("--page", type=int, default=1)
+    p.add_argument("--size", type=int, default=200)
+    p.add_argument("--json", action="store_true")
+    add_common(p)
+    p.set_defaults(func=cmd_check_tables)
+
+    p = csub.add_parser("showdiff", help="对比报告格式输出([NO] 源表==目标表)")
+    p.add_argument("check_id", type=int,
+                   help="主任务ID或checkTaskId，自动解析")
+    p.add_argument("--all", action="store_true",
+                   help="一致表也输出([OK]行，默认只输出[NO])")
+    p.add_argument("--detail", action="store_true",
+                   help="每张差异表追加行数/分类/不一致列")
+    p.add_argument("--rows", type=int, default=0,
+                   help="每表附带行级差异示例条数(配合 --detail)")
+    p.add_argument("--size", type=int, default=500)
+    add_common(p)
+    p.set_defaults(func=cmd_check_showdiff)
+
+    p = csub.add_parser("rows", help="行级差异明细")
+    p.add_argument("check_obj_id", type=int,
+                   help="表对象ID，来自 check tables 列表的 id 列")
+    p.add_argument("--page", type=int, default=1)
+    p.add_argument("--size", type=int, default=50)
+    p.add_argument("--json", action="store_true")
+    add_common(p)
+    p.set_defaults(func=cmd_check_rows)
 
     p = csub.add_parser("log", help="校验日志")
     p.add_argument("check_id", type=int)
@@ -1431,19 +1779,27 @@ def build_parser():
     p.set_defaults(func=lambda a: cmd_check_cmd(
         a, "yashan/check/task/save"))
 
-    p = csub.add_parser("start", help="启动校验任务")
-    p.add_argument("check_id", type=int)
+    p = csub.add_parser("start", help="触发/重跑校验任务")
+    p.add_argument("check_id", type=int,
+                   help="主任务ID或checkTaskId，自动解析")
     p.add_argument("--json", action="store_true")
     add_common(p)
     p.set_defaults(func=lambda a: cmd_check_action_id(
-        a, "yashan/check/task/start/%d"))
+        a, "yashan/check/task/start/%d", what="启动"))
 
     p = csub.add_parser("stop", help="取消校验任务")
     p.add_argument("check_id", type=int)
     p.add_argument("--json", action="store_true")
     add_common(p)
     p.set_defaults(func=lambda a: cmd_check_action_id(
-        a, "yashan/check/task/cancel/%d"))
+        a, "yashan/check/task/cancel/%d", what="取消"))
+
+    p = csub.add_parser("watch", help="轮询校验直至终态(0=通过)")
+    p.add_argument("check_id", type=int)
+    p.add_argument("--interval", type=float, default=3.0)
+    p.add_argument("--json", action="store_true")
+    add_common(p)
+    p.set_defaults(func=cmd_check_watch)
 
     p = csub.add_parser("repair", help="校验修复(需 --data)")
     p.add_argument("--data", help="请求 JSON 或 @file")
