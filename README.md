@@ -1,17 +1,16 @@
-# ympctl-go — YMP 迁移平台命令行工具（Go 实现）
+# ympctl — YMP 迁移平台命令行工具
 
-`ympctl` 的 Go 语言实现，与仓库根目录的 Python 版（`ympctl.py`）**功能对齐**：
-通过 YMP (YashanDB Migration Platform) 的 OpenAPI（`yashan/*` REST 接口）管理迁移任务。
+通过 YMP (YashanDB Migration Platform) 的 OpenAPI（`yashan/*` REST 接口）管理迁移任务：
+触发、监控、日志、配置导入导出、数据校验差异对比、报告下载，以及数据源/评估等全套操作。
 
-- 纯 Go 标准库，无第三方依赖，编译为单个可执行文件
-- **共用 `~/.ympctl.json` 配置与 Token**，可与 Python 版互换使用
-- 数据源密码 AES-128-CBC/ZeroPadding 加密与 Python 版**逐字节一致**
+- **Go 语言实现**：纯标准库、零第三方依赖、编译为单个可执行文件（Windows / Linux）
+- 配置与 Token 保存于 `~/.ympctl.json`
+- 数据源密码采用 YMP 前端同款 AES-128-CBC/ZeroPadding 加密（NIST 向量校验）
 
 ## 构建
 
 ```bash
-cd go
-go build -o ympctl.exe .          # Windows
+go build -o ympctl.exe .            # Windows
 GOOS=linux GOARCH=amd64 go build -o ympctl .   # Linux
 ```
 
@@ -20,11 +19,12 @@ GOOS=linux GOARCH=amd64 go build -o ympctl .   # Linux
 ```bash
 ./ympctl login --url http://192.168.72.149:8090 --user admin
 ./ympctl task list
-./ympctl task start 1            # 触发迁移(自动合并已保存配置)
-./ympctl task watch 1            # 等待迁移结束(0=成功)
-./ympctl task progress 1         # 迁移量已换算 MB
-./ympctl check showdiff 2 --detail --rows 3   # 差异对比报告
-./ympctl encrypt "明文"           # 数据源密码加密
+./ympctl task start 1               # 触发迁移(自动合并已保存配置)
+./ympctl task watch 1               # 等待迁移结束(退出码 0=成功)
+./ympctl task progress 1            # 迁移量已换算 MB
+./ympctl task log 1 --follow        # 实时日志
+./ympctl check showdiff 2 --detail --rows 3   # 校验差异对比报告
+./ympctl report migration 1 -o report.zip
 ./ympctl api GET yashan/platform/getInfo      # 原始 API 透传
 ```
 
@@ -54,3 +54,8 @@ bash regression.sh   # 集成回归(需可访问的 YMP 实例): 88 项全命令
 
 回归脚本对差异类断言采用动态校验(输出与当时数据状态自洽)，
 不触发真实迁移、不改密码、不动数据。
+
+## 说明
+
+- 早期仓库曾提供 Python 实现（ympctl.py），现已下架；历史代码可在 git 提交记录（v0.1~v1.0 之前的提交）中查看。
+- `config.example.json` 为 `task export-config` 导出的迁移配置模板，可用于快速创建同类任务。

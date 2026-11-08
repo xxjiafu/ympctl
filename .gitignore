@@ -1,6 +1,8 @@
 /*
 !/.gitignore
-!/ympctl.py
-!/README_ympctl.md
-!/o2y_config.json
-!/go/
+!/README.md
+!/LICENSE
+!/go.mod
+!/*.go
+!/config.example.json
+!/regression.sh
