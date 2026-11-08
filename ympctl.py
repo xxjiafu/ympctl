@@ -16,6 +16,7 @@ ympctl - YMP (YashanDB Migration Platform) 命令行控制工具
 更多: python ympctl.py --help   或   python ympctl.py <group> --help
 """
 import argparse
+import base64
 import getpass
 import hashlib
 import json
@@ -51,6 +52,99 @@ TASK_STATUS = {
 }
 
 DB_TYPE = {1: "Oracle", 2: "MySQL", 3: "DM(达梦)", 4: "YashanDB"}
+
+# ---------------------------------------------------------------- 密码加密
+# YMP 数据源密码使用 AES-128-CBC + ZeroPadding，输出 Base64，
+# key 与 IV 均为 "1234567890123456"（与 YMP 前端 crypto-js 行为一致）。
+
+YMP_AES_KEY = b"1234567890123456"
+
+_SBOX = (
+    0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B,
+    0xFE, 0xD7, 0xAB, 0x76, 0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0,
+    0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0, 0xB7, 0xFD, 0x93, 0x26,
+    0x36, 0x3F, 0xF7, 0xCC, 0x34, 0xA5, 0xE5, 0xF1, 0x71, 0xD8, 0x31, 0x15,
+    0x04, 0xC7, 0x23, 0xC3, 0x18, 0x96, 0x05, 0x9A, 0x07, 0x12, 0x80, 0xE2,
+    0xEB, 0x27, 0xB2, 0x75, 0x09, 0x83, 0x2C, 0x1A, 0x1B, 0x6E, 0x5A, 0xA0,
+    0x52, 0x3B, 0xD6, 0xB3, 0x29, 0xE3, 0x2F, 0x84, 0x53, 0xD1, 0x00, 0xED,
+    0x20, 0xFC, 0xB1, 0x5B, 0x6A, 0xCB, 0xBE, 0x39, 0x4A, 0x4C, 0x58, 0xCF,
+    0xD0, 0xEF, 0xAA, 0xFB, 0x43, 0x4D, 0x33, 0x85, 0x45, 0xF9, 0x02, 0x7F,
+    0x50, 0x3C, 0x9F, 0xA8, 0x51, 0xA3, 0x40, 0x8F, 0x92, 0x9D, 0x38, 0xF5,
+    0xBC, 0xB6, 0xDA, 0x21, 0x10, 0xFF, 0xF3, 0xD2, 0xCD, 0x0C, 0x13, 0xEC,
+    0x5F, 0x97, 0x44, 0x17, 0xC4, 0xA7, 0x7E, 0x3D, 0x64, 0x5D, 0x19, 0x73,
+    0x60, 0x81, 0x4F, 0xDC, 0x22, 0x2A, 0x90, 0x88, 0x46, 0xEE, 0xB8, 0x14,
+    0xDE, 0x5E, 0x0B, 0xDB, 0xE0, 0x32, 0x3A, 0x0A, 0x49, 0x06, 0x24, 0x5C,
+    0xC2, 0xD3, 0xAC, 0x62, 0x91, 0x95, 0xE4, 0x79, 0xE7, 0xC8, 0x37, 0x6D,
+    0x8D, 0xD5, 0x4E, 0xA9, 0x6C, 0x56, 0xF4, 0xEA, 0x65, 0x7A, 0xAE, 0x08,
+    0xBA, 0x78, 0x25, 0x2E, 0x1C, 0xA6, 0xB4, 0xC6, 0xE8, 0xDD, 0x74, 0x1F,
+    0x4B, 0xBD, 0x8B, 0x8A, 0x70, 0x3E, 0xB5, 0x66, 0x48, 0x03, 0xF6, 0x0E,
+    0x61, 0x35, 0x57, 0xB9, 0x86, 0xC1, 0x1D, 0x9E, 0xE1, 0xF8, 0x98, 0x11,
+    0x69, 0xD9, 0x8E, 0x94, 0x9B, 0x1E, 0x87, 0xE9, 0xCE, 0x55, 0x28, 0xDF,
+    0x8C, 0xA1, 0x89, 0x0D, 0xBF, 0xE6, 0x42, 0x68, 0x41, 0x99, 0x2D, 0x0F,
+    0xB0, 0x54, 0xBB, 0x16)
+
+_RCON = (0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36)
+
+
+def _xt(a):
+    a <<= 1
+    if a & 0x100:
+        a ^= 0x11B
+    return a & 0xFF
+
+
+def _aes128_expand(key):
+    w = [list(key[4 * i:4 * i + 4]) for i in range(4)]
+    for i in range(4, 44):
+        t = list(w[i - 1])
+        if i % 4 == 0:
+            t = t[1:] + t[:1]
+            t = [_SBOX[b] for b in t]
+            t[0] ^= _RCON[i // 4 - 1]
+        w.append([a ^ b for a, b in zip(w[i - 4], t)])
+    return w
+
+
+def _aes128_enc_block(blk, w):
+    s = [blk[i] ^ w[i // 4][i % 4] for i in range(16)]  # AddRoundKey(0)
+    for rnd in range(1, 11):
+        s = [_SBOX[b] for b in s]                        # SubBytes
+        ns = list(s)                                     # ShiftRows
+        for r in range(1, 4):
+            for c in range(4):
+                ns[4 * c + r] = s[4 * ((c + r) % 4) + r]
+        s = ns
+        if rnd != 10:                                    # MixColumns
+            for c in range(4):
+                a0, a1, a2, a3 = s[4 * c:4 * c + 4]
+                s[4 * c + 0] = _xt(a0) ^ _xt(a1) ^ a1 ^ a2 ^ a3
+                s[4 * c + 1] = a0 ^ _xt(a1) ^ _xt(a2) ^ a2 ^ a3
+                s[4 * c + 2] = a0 ^ a1 ^ _xt(a2) ^ _xt(a3) ^ a3
+                s[4 * c + 3] = _xt(a0) ^ a0 ^ a1 ^ a2 ^ _xt(a3)
+        for c in range(4):                               # AddRoundKey
+            for j in range(4):
+                s[4 * c + j] ^= w[4 * rnd + c][j]
+    return s
+
+
+def ymp_encrypt_password(text):
+    """与 YMP 前端一致的 AES-128-CBC/ZeroPadding/Base64 加密。"""
+    if not text:
+        return ""
+    key = YMP_AES_KEY
+    iv = YMP_AES_KEY
+    w = _aes128_expand(key)
+    data = text.encode("utf-8")
+    data += b"\x00" * (16 - len(data) % 16)  # crypto-js ZeroPadding(对齐也补整块)
+    out = bytearray()
+    prev = iv
+    for i in range(0, len(data), 16):
+        blk = [b ^ p for b, p in zip(data[i:i + 16], prev)]
+        ct = _aes128_enc_block(blk, w)
+        out.extend(ct)
+        prev = bytes(ct)
+    return base64.b64encode(bytes(out)).decode("ascii")
+
 
 # ---------------------------------------------------------------- 配置与 HTTP
 
@@ -782,6 +876,10 @@ def cmd_ds_action(args, path):
     payload = parse_data_arg(args)
     if payload is None:
         die("需要 --data JSON（数据源参数）")
+    if isinstance(payload, dict) and payload.get("password") \
+            and not getattr(args, "plain_password", False):
+        # YMP 前端对数据源密码做 AES 加密后再提交
+        payload["password"] = ymp_encrypt_password(str(payload["password"]))
     result = client.post(path, data=payload)
     emit(result, args.json)
 
@@ -963,7 +1061,12 @@ def cmd_report_check(args):
 # ---------------------------- 原始 API 透传
 
 
-
+def cmd_encrypt(args):
+    """把明文按 YMP 数据源密码加密算法处理，输出 Base64 密文。"""
+    text = args.text
+    if text == "-":
+        text = sys.stdin.readline().rstrip("\r\n")
+    print(ymp_encrypt_password(text))
 
 
 def cmd_api(args):
@@ -1190,6 +1293,8 @@ def build_parser():
 
     p = dsub.add_parser("add", help="新增数据源")
     p.add_argument("--data", help="数据源 JSON 或 @file(password 会自动加密)")
+    p.add_argument("--plain-password", action="store_true",
+                   help="不加密 password 字段(已手工加密时使用)")
     p.add_argument("--json", action="store_true")
     add_common(p)
     p.set_defaults(func=lambda a: cmd_ds_action(
@@ -1197,6 +1302,7 @@ def build_parser():
 
     p = dsub.add_parser("refresh", help="刷新/更新数据源信息")
     p.add_argument("--data", help="数据源 JSON 或 @file(password 会自动加密)")
+    p.add_argument("--plain-password", action="store_true")
     p.add_argument("--json", action="store_true")
     add_common(p)
     p.set_defaults(func=lambda a: cmd_ds_action(
@@ -1204,6 +1310,7 @@ def build_parser():
 
     p = dsub.add_parser("test", help="测试数据源连通性")
     p.add_argument("--data", help="数据源 JSON 或 @file(password 会自动加密)")
+    p.add_argument("--plain-password", action="store_true")
     p.add_argument("--json", action="store_true")
     add_common(p)
     p.set_defaults(func=lambda a: cmd_ds_action(
@@ -1367,6 +1474,11 @@ def build_parser():
     p.add_argument("-o", "--output")
     add_common(p)
     p.set_defaults(func=cmd_report_check)
+
+    # --- 密码加密工具
+    p = sub.add_parser("encrypt", help="按 YMP 算法加密数据源密码")
+    p.add_argument("text", help="明文，或 '-' 从 stdin 读入")
+    p.set_defaults(func=cmd_encrypt)
 
     # --- 原始 API
     p = sub.add_parser("api", help="原始 API 透传（覆盖未封装接口）")
